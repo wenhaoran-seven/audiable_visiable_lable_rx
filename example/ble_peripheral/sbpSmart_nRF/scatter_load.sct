@@ -44,7 +44,10 @@ LR_ROM_XIP  0x11020000 0x020000 {
    my_printf.o(+RO)
    gpio.o(+RO)
    ;osal_snv.o(+RO)
+   user_hal.o(+RO)
+   adc.o(+RO)
    *.o(_section_xip_code_, _func_xip_code_.*)
+   
   }
  }  
 

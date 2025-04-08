@@ -39,6 +39,7 @@
 #include "mcu.h"
 #include "gpio.h"
 #include "log.h"
+#include "adc.h"
 #include "rf_phy_driver.h"
 #include "flash.h"
 #include "version.h"
@@ -179,7 +180,7 @@ static void hal_low_power_io_init(void)
     DCDC_CONFIG_SETTING(0x0a);
     DCDC_REF_CLK_SETTING(1);
     DIG_LDO_CURRENT_SETTING(0x01);
-    hal_pwrmgr_RAM_retention(RET_SRAM0|RET_SRAM1);
+    hal_pwrmgr_RAM_retention(RET_SRAM0|RET_SRAM1|RET_SRAM2);
     //hal_pwrmgr_RAM_retention(RET_SRAM0);
     hal_pwrmgr_RAM_retention_set();
     hal_pwrmgr_LowCurrentLdo_enable();
@@ -246,6 +247,7 @@ static void hal_init(void)
     hal_spif_cache_init(cfg);
     LOG_INIT();
     hal_gpio_init();
+		hal_adc_init();
 }
 
 
@@ -280,12 +282,12 @@ int  main(void)
         rf_phy_direct_test();
 
     LOG("SDK Version ID %08x \n",SDK_VER_RELEASE_ID);
-    LOG("MAX_NUM_LL_CONN %d , GATT_MAX_NUM_CONN %d\n",MAX_NUM_LL_CONN,GATT_MAX_NUM_CONN);
-    LOG("rfClk %d rcClk %d sysClk %d tpCap[%02x %02x]\n",g_rfPhyClkSel,g_clk32K_config,g_system_clk,g_rfPhyTpCal0,g_rfPhyTpCal1);
-    LOG("sizeof(struct ll_pkt_desc) = %d, buf size = %d\n", sizeof(struct ll_pkt_desc), BLE_CONN_BUF_SIZE);
-    LOG("sizeof(g_pConnectionBuffer) = %d, sizeof(pConnContext) = %d, sizeof(largeHeap)=%d \n",\
+    LOG("MAX_NUM_LL_CONN %d , GATT_MAX_NUM_CONN %d\r\n",MAX_NUM_LL_CONN,GATT_MAX_NUM_CONN);
+    LOG("rfClk %d rcClk %d sysClk %d tpCap[%02x %02x]\r\n",g_rfPhyClkSel,g_clk32K_config,g_system_clk,g_rfPhyTpCal0,g_rfPhyTpCal1);
+    LOG("sizeof(struct ll_pkt_desc) = %d, buf size = %d\r\n", sizeof(struct ll_pkt_desc), BLE_CONN_BUF_SIZE);
+    LOG("sizeof(g_pConnectionBuffer) = %d, sizeof(pConnContext) = %d, sizeof(largeHeap)=%d \r\n",\
         sizeof(g_pConnectionBuffer), sizeof(pConnContext),sizeof(g_largeHeap));
-    LOG("[REST CAUSE] %d\n ",g_system_reset_cause);
+    LOG("[REST CAUSE] %d\r\n ",g_system_reset_cause);
     app_main();
 }
 

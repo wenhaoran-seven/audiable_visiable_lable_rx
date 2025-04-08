@@ -57,6 +57,9 @@
 #include "flash.h"
 #include "rf_phy_nrf.h"
 #include "pwrmgr.h"
+
+#include "user_info.h"
+#include "peripheral.h"
 /*********************************************************************
     MACROS
 */
@@ -233,9 +236,8 @@ uint32 PHY_ISR_entry_time = 0;
 
 __align(4) uint8_t  phyBufRx[256];
 __align(4) uint8_t  phyBufTx[256];
-//static uint8_t s_pubAddr[6];
 
-uint8_t s_pubAddr[6];
+uint8_t dst_pubAddr[6];
 static uint8_t advHead[2];
 
 
@@ -250,7 +252,7 @@ static uint8_t s_rf_pid=0xFF;
 static uint32_t s_txT0;
 #if(DEF_PHYPLUS_MESH_SUPPORT == PHYPLUS_MESH_ENABLE && DEF_PHYPLUS_NRF_SUPPORT == PHYPLUS_NRF_DISABLE)
     uint16_t s_rf_netid=0x0a02;
-    uint16_t s_rf_target_netid=0x0a01;
+    uint16_t s_rf_target_netid=DEFAULT_TARGET_NETID;
 #endif
 
 static uint8_t adv_buffer[32];
@@ -329,9 +331,7 @@ uint8_t rf_rxdata_check(uint8_t* din)
         if(s_rf_crc == s_rf_lastcrc)
         {
             ret = PPlus_ERR_INVALID_FLAGS;
-            LOG_DEBUG("repeated message\n");
-            //gpio_write(P9,1);gpio_write(P9,0);gpio_write(P9,1);gpio_write(P9,0);
-            //LOG_DEBUG(":%02x:%02x:%02x\n",pData[0],s_rf_crc,s_rf_lastpid);
+            LOG_DEBUG("repeated message\r\n");
             return ret;
         }
 
@@ -350,11 +350,7 @@ uint8_t rf_txack_check(uint8_t* din)
     if(!(PHYPLUS_GET_ACK_BIT(pData[0])) || (PHYPLUS_GET_NEEDACK_BIT(pData[0])) || (PHYPLUS_GET_PID(pData[0])!=s_rf_pid))   //check the bits of ACK, NEEDACK, PID
     {
         ret = PPlus_ERR_INVALID_DATA;
-        // LOG("wrong flags: ACK:%d  NEEDACK:%d  PID:%d\n",pData[0]&0x08,pData[0]&0x04,pData[0]&0x03);
-        // if(PHYPLUS_GET_PID(pData[0])!=s_rf_pid)
-        // {
-        //     LOG("wrong PID\n");
-        // }
+
         return ret;
     }
 
@@ -532,7 +528,7 @@ void phy_hw_go(void)
     //20190115 ZQ recorded ll re-trigger
     if(llWaitingIrq==TRUE)
     {
-        LOG_DEBUG("[PHY TRIG ERR]\n");
+        LOG_DEBUG("[PHY TRIG ERR]\r\n");
     }
 
     *(volatile uint32_t*)(LL_HW_BASE+ 0x14) = LL_HW_IRQ_MASK;   //clr  irq status
@@ -570,9 +566,9 @@ void phy_hw_stop(void)
         WaitRTCCount(3);
         cnt++;
 
-        if(cnt>10)
+        if(cnt > 10)
         {
-            LOG_DEBUG("[PHY STOP ERR]\n");
+            LOG_DEBUG("[PHY STOP ERR]\r\n");
             break;
         }
     };
@@ -757,7 +753,7 @@ void phy_rf_txack(void)
         rfRxPID = PHYPLUS_GET_PID(s_pktCfg.p_rxBuf[0]); //get PID
         rfTxAckBuf[0]= 0x08 | rfRxPID;    //pack type-flag and PID into 1st byte
         rfTxAckBuf[1]= PHYPLUS_RF_TXACK_PKT_LEN;
-        osal_memcpy(&rfTxAckBuf[2],s_pubAddr,6);//20221020 ZONG: turn to send own addr
+        osal_memcpy(&rfTxAckBuf[2],dst_pubAddr,6);//20221020 ZONG: turn to send own addr
 
         if(phy_opcode_cbfunc != NULL &&
                 PHYPLUS_GET_OPCODE(s_pktCfg.p_rxBuf[0]))      //check if it is available and necessary
@@ -785,7 +781,7 @@ void phy_rf_txack(void)
         rfRxPID = PHYPLUS_GET_PID(s_pktCfg.p_rxBuf[0]); //get PID
         rfTxAckBuf[0]= 0x08 | rfRxPID;    //pack type-flag and PID into 1st byte
         rfTxAckBuf[1]= PHYPLUS_RF_TXACK_PKT_LEN+4;
-        osal_memcpy(&rfTxAckBuf[2],s_pubAddr,6);//20221020 ZONG: turn to send own addr
+        osal_memcpy(&rfTxAckBuf[2],dst_pubAddr,6);//20221020 ZONG: turn to send own addr
         rfTxAckBuf[8] = s_rf_netid & 0xFF;
         rfTxAckBuf[9] = s_rf_netid >> 8;
         rfTxAckBuf[10] = s_pktCfg.p_rxBuf[8];
@@ -816,7 +812,7 @@ void phy_rf_txack(void)
     s_phy.Status = PHYPLUS_RFPHY_RX_TXACK;
     s_phyDbg.rx_txack_t0 = TIME_DELTA(t0,PHY_ISR_entry_time);       //time from IRQ to Set_STX
     s_phyDbg.rx_txack_t1 = TIME_DELTA(t1,t0);                       //time from Set_STX to TX_Ready
-    LOG_DEBUG("Delay: %d, Spent Time: %d\n",delay, s_phyDbg.rx_txack_t1);
+    LOG_DEBUG("Delay: %d, Spent Time: %d\r\n",delay, s_phyDbg.rx_txack_t1);
     s_phyDbg.tx_ack_cnt++;
 }
 
@@ -862,19 +858,8 @@ void phy_rx_data_process(void)
         uint8_t pduLen = pLen;
 
         if(phy_data_cbfunc == NULL)
-            //if(osal_memcmp(peer_addr,pData+2,6))     //len 5->6
         {
-            //pduLen= pData[1];
-            //pwm light control
-            // #if(DEF_PHYPLUS_AUTOACK_SUPPORT==1)
-            //     if(pData[1]==3+6   &&
-            //        pData[8]==0xff &&
-            //        pData[9]==0xf1)
-            //        {
-            //             pwmlight_phy_control(pData[10]);
-            //        }
-            // #endif
-            LOG("-------------------------\n");
+            LOG("-------------------------\r\n");
             LOG("[PHY RX] [-%03ddbm %4dKHz %02d CH] ",pRssi,phyFoff-512,s_phy.rfChn);
             my_dump_byte(&pData[0],pduLen);
         }
@@ -916,13 +901,13 @@ void phy_tx_buf_updata(uint8_t* adva,uint8_t* txHead,uint8_t* txPayload,uint8_t 
     osal_memcpy(&(phyBufTx[0]),&(txHead[0]),2);          //copy tx header
     osal_memcpy(&(phyBufTx[2]),&(adva[0]),6);              //copy AdvA
     osal_memcpy(&(phyBufTx[8]),&(txPayload[0]),dlen);      //copy payload
-    LOG("\n-----------------------------------------------\n");
-    LOG("PHY BUF Tx Dump\n");
+//    LOG("\n-----------------------------------------------\r\n");
+//    LOG("PHY BUF Tx Dump\r\n");
 
-    for(uint8_t i=0; i<phyBufTx[1]+2; i++)
-        LOG("%02x ",phyBufTx[i]);
+//    for(uint8_t i=0; i<phyBufTx[1]+2; i++)
+//        LOG("%02x ",phyBufTx[i]);
 
-    LOG("\n-----------------------------------------------\n");
+//    LOG("\r\n-----------------------------------------------\r\n");
 }
 #if(DEF_PHYPLUS_TRX_SUPPORT & PHYPLUS_CONFIG_RX)
 void phy_rf_process_recv(void)
@@ -1082,11 +1067,11 @@ void phy_rf_schedule(void)
 
             if(s_phy.txAck)
             {
-                LOG("[TX OK]\n");
+                LOG("[TX OK]\r\n");
             }
             else
             {
-                LOG("[TX FAIL]\n");
+                LOG("[TX FAIL]\r\n");
             }
 
             osal_set_event(PhyPlusPhy_TaskID,PPP_TRX_DONE_EVT);
@@ -1189,21 +1174,23 @@ void PLUSPHY_IRQHandler(void)
                 uint32_t pktFoot0, pktFoot1;
                 ll_hw_read_rfifo1(s_pktCfg.p_rxBuf, &pktLen,&pktFoot0,&pktFoot1);
                 rf_phy_get_pktFoot_fromPkt(pktFoot0,pktFoot1,&phyRssi,&phyFoff,&phyCarrSens);
-                #if(DEF_PHYPLUS_MESH_SUPPORT == PHYPLUS_MESH_ENABLE)
-								//my_dump_byte(s_pktCfg.p_rxBuf,pktLen);
-                if(osal_memcmp(s_pktCfg.p_rxBuf+10,&s_rf_netid,2))  //compare target_ID in data with local netID
-                #else
-                if(osal_memcmp(s_pktCfg.p_rxBuf+2,peer_addr,6))    //20221020 ZONG: move addr check here, and check remote addr instead of local addr
-                #endif
+								//my_dump_byte (s_pktCfg.p_rxBuf,pktLen);
+								if(((s_pktCfg.p_rxBuf[2] == Device_Mac_Addr[5]) && 
+										(s_pktCfg.p_rxBuf[3] == Device_Mac_Addr[4]) &&
+										(s_pktCfg.p_rxBuf[4] == Device_Mac_Addr[3]) &&
+										(s_pktCfg.p_rxBuf[5] == Device_Mac_Addr[2]) &&
+										(s_pktCfg.p_rxBuf[6] == Device_Mac_Addr[1]) &&
+										(s_pktCfg.p_rxBuf[7] == Device_Mac_Addr[0]) &&
+										(s_pktCfg.p_rxBuf[10] == 0) && (s_pktCfg.p_rxBuf[11] == 0)) //mac unicast target_netid = 0x0000
+								 || (osal_memcmp(s_pktCfg.p_rxBuf+10,&s_rf_netid,2))) //target_netid unicast
                 {
                     #if(DEF_PHYPLUS_AUTOACK_SUPPORT == PHYPLUS_AUTOACK_ENABLE)       //SRX:RX->TXACK
-
                     if(!(PHYPLUS_GET_ACK_BIT(s_pktCfg.p_rxBuf[0])) && (PHYPLUS_GET_NEEDACK_BIT(s_pktCfg.p_rxBuf[0])))
                     {
                         s_rf_crc=0;
                         osal_memcpy((uint8_t*)(&s_rf_crc),(uint8_t*)(&s_pktCfg.p_rxBuf[pktLen]),3);
                         phy_rf_txack();
-                        LOG_DEBUG("%08x\n",s_rf_crc);
+                        LOG_DEBUG("s_rf_crc = %08x\r\n",s_rf_crc);
                     }
 
                     #endif
@@ -1211,7 +1198,7 @@ void PLUSPHY_IRQHandler(void)
                 }
 
                 #if(DEF_PHYPLUS_MESH_SUPPORT == PHYPLUS_MESH_ENABLE)
-                else if((s_rf_netid != 0) && (s_pktCfg.p_rxBuf[10] == 0) && (s_pktCfg.p_rxBuf[11] == PHYPLUS_GET_GROUPID(s_rf_netid)))          //PHYPLUS_IS_GROUP_ADV((s_pktCfg.p_rxBuf+10),s_rf_netid)
+                else if((s_rf_netid != 0) && (s_pktCfg.p_rxBuf[10] == 0) && (s_pktCfg.p_rxBuf[11] == PHYPLUS_GET_GROUPID(s_rf_netid))) //groupcast    [0x00 < target_netid_H < 0xFF      target_netid_L = 0x00]
                 {
                     s_rf_crc=0;
                     osal_memcpy((uint8_t*)(&s_rf_crc),(uint8_t*)(&s_pktCfg.p_rxBuf[pktLen]),3);
@@ -1223,14 +1210,27 @@ void PLUSPHY_IRQHandler(void)
 
                     s_rf_lastcrc =  s_rf_crc;
                     s_phyDbg.rx_data_cnt++;
-                }                    //20221020 ZONG: add NET_ID check for mesh mode
-
+                }                   
                 #endif
+								else if(((s_pktCfg.p_rxBuf[10] == 0xFF) && (s_pktCfg.p_rxBuf[11] == 0xFF)) && 
+												((s_pktCfg.p_rxBuf[2] == 0xFF) && (s_pktCfg.p_rxBuf[3] == 0xFF) && (s_pktCfg.p_rxBuf[4] == 0xFF) && (s_pktCfg.p_rxBuf[5] == 0xFF) && (s_pktCfg.p_rxBuf[6] == 0xFF) && (s_pktCfg.p_rxBuf[7] == 0xFF)))//broadcast    
+                {
+										
+										s_rf_crc=0;
+                    osal_memcpy((uint8_t*)(&s_rf_crc),(uint8_t*)(&s_pktCfg.p_rxBuf[pktLen]),3);
+
+                    if(s_rf_crc != s_rf_lastcrc)
+                    {
+                        osal_set_event(PhyPlusPhy_TaskID,PPP_RX_DATA_PROCESS_EVT);
+                    }
+
+                    s_rf_lastcrc =  s_rf_crc;
+                    s_phyDbg.rx_data_cnt++;
+                    
+                }
                 else
                 {
-                    LOG("wrong device:\n");
-                    my_dump_byte((uint8_t*)s_pktCfg.p_rxBuf+10, 2);
-                    dbg_printf("%02x %02x\n",s_rf_netid>>8,s_rf_netid&0xFF);
+                    //LOG("wrong device:\r\n");
                 }
             }
         }
@@ -1265,7 +1265,6 @@ void PLUSPHY_IRQHandler(void)
                 ll_hw_read_rfifo1(s_pktCfg.p_rxBuf, &pktLen,&pktFoot0,&pktFoot1);
                 rf_phy_get_pktFoot_fromPkt(pktFoot0,pktFoot1,&phyRssi,&phyFoff,&phyCarrSens);
                 #if(DEF_PHYPLUS_MESH_SUPPORT == PHYPLUS_MESH_ENABLE)
-								my_dump_byte(s_pktCfg.p_rxBuf,pktLen);
                 if(osal_memcmp(s_pktCfg.p_rxBuf+10,&s_rf_netid,2))  //compare target_ID in data with local netID
                 #else
                 if(osal_memcmp(s_pktCfg.p_rxBuf+2,peer_addr,6))         //20221020 ZONG: move addr check here, and check remote addr instead of local addr
@@ -1275,10 +1274,10 @@ void PLUSPHY_IRQHandler(void)
                 }
                 else
                 {
-                    LOG("wrong device:\n");
-                    my_dump_byte((uint8_t*)s_pktCfg.p_rxBuf+10, 2);
+                    //LOG("wrong device:\r\n");
+                    //my_dump_byte((uint8_t*)s_pktCfg.p_rxBuf+10, 2);
                     #if(DEF_PHYPLUS_MESH_SUPPORT == PHYPLUS_MESH_ENABLE)
-                    dbg_printf("%02x %02x\n",s_rf_netid>>8,s_rf_netid&0xFF);
+                    //dbg_printf("%02x %02x\r\n",s_rf_netid>>8,s_rf_netid&0xFF);
                     #endif
                 }
             }
@@ -1348,13 +1347,6 @@ void PhyPlusPhy_Init(uint8 task_id)
     s_pktCfg.pduLen     =   nrf_pudLen+6;// (1+2+2+1);
     #else
     // read flash driectly becasue HW has do the address mapping for read Flash operation
-    uint8_t p[6]= {0x01,0x2,3,4,5,6};
-    s_pubAddr[3] = p[0];
-    s_pubAddr[2] = p[1];
-    s_pubAddr[1] = p[2];
-    s_pubAddr[0] = p[3];
-    s_pubAddr[5] = p[4];
-    s_pubAddr[4] = p[5];
     s_pktCfg.syncWord   =   DEFAULT_SYNCWORD;
     s_pktCfg.pduLen     =   31+6;// (1+2+2+1);
     #if(DEF_PHYPLUS_AUTOACK_SUPPORT == PHYPLUS_AUTOACK_DISABLE)
@@ -1395,15 +1387,16 @@ void PhyPlusPhy_Init(uint8 task_id)
     #else
     s_pktCfg.p_txBuf    =   &(phyBufTx[0]);
     s_pktCfg.p_rxBuf    =   &(phyBufRx[0]);
-    LOG("NRF Disabled\n");
+    LOG("NRF Disabled\r\n");
     #endif
 
-    LOG("[PHY] init done %d rfchn%d AutoAck %d SW[%8x] CRC[%d %8x] WT[%2x]\n"\
+    LOG("[PHY] init done %d rfchn%d AutoAck %d SW[%8x] CRC[%d %8x] WT[%2x]\r\n"\
         ,s_phy.Status,s_phy.rfChn,s_phy.enAutoAck,s_pktCfg.syncWord,s_pktCfg.crcFmt, s_pktCfg.crcSeed,s_pktCfg.wtSeed);
 }
+
 static void show_phy_debug_info(void)
 {
-    LOG("[PHY DBG]st %02x [TX]dat %d ack %d rty %d [ackT]%d %d [RX]dat %d ack%d crc %d ign %d \n"
+    LOG("[PHY DBG]st %02x [TX]dat %d ack %d rty %d [ackT]%d %d [RX]dat %d ack%d crc %d ign %d \r\n"
         ,s_phy.Status,s_phyDbg.tx_data_cnt,s_phyDbg.tx_ack_cnt,s_phyDbg.tx_retry_cnt
         ,s_phyDbg.rx_txack_t0,s_phyDbg.rx_txack_t1
         ,s_phyDbg.rx_data_cnt,s_phyDbg.rx_txack_cnt,s_phyDbg.rx_crc_err,s_phyDbg.rx_data_ign);
@@ -1420,7 +1413,7 @@ static void process_rx_done_evt(void)
 #if(DEF_PHYPLUS_TRX_SUPPORT & PHYPLUS_CONFIG_TX)
 static void process_tx_done_evt(void)
 {
-    LOG("tx done evt\n");
+    LOG("tx done evt\r\n");
     #if(DEF_PHYPLUS_AUTOACK_SUPPORT == PHYPLUS_AUTOACK_ENABLE)
     phy_comm_evt_t phy_pdu_cb;
 
@@ -1442,7 +1435,7 @@ static void process_trx_done_evt(void)
     if(s_phy.txAck)
     {
         // adv_buffer[0]+=1;
-        LOG("[TX OK]\n");
+        LOG("[TX OK]\r\n");
 
         if(phy_data_cbfunc != NULL)
         {
@@ -1463,7 +1456,7 @@ static void process_trx_done_evt(void)
     }
     else
     {
-        LOG("[TX Fail]\n");
+        LOG("[TX Fail]\r\n");
 
         if(phy_data_cbfunc != NULL)
         {
@@ -1475,7 +1468,7 @@ static void process_trx_done_evt(void)
         }
     }
 
-    LOG_DEBUG("trx done evt reTry %d reMax %d\n",s_phy.reTxCnt,s_phy.reTxMax);
+    LOG_DEBUG("trx done evt reTry %d reMax %d\r\n",s_phy.reTxCnt,s_phy.reTxMax);
     s_phy.reTxCnt = 0;
     s_phy.txAck   = 0;
     show_phy_debug_info();
@@ -1540,14 +1533,16 @@ uint8_t phy_rf_start_tx(uint8_t* din, uint8_t dLen, uint32_t txintv, uint16_t ta
 #if(DEF_PHYPLUS_TRX_SUPPORT & PHYPLUS_CONFIG_RX)
 uint8_t phy_rf_stop_rx(void)
 {
-    if( PHYPLUS_RFPHY_RX_ONLY ==s_phy.Status ||
-            PHYPLUS_RFPHY_RX_PENDING ==s_phy.Status)
+    if( PHYPLUS_RFPHY_RX_ONLY 		==	s_phy.Status ||
+        PHYPLUS_RFPHY_RX_PENDING 	==	s_phy.Status)
     {
         s_phy.rxOnlyTO=0;
         s_chanHop.curIdx = 0;
 
         if(PHYPLUS_RFPHY_RX_ONLY ==s_phy.Status)
+				{
             phy_hw_stop();
+				}
         else
         {
             s_phy.Status = PHYPLUS_RFPHY_IDLE;
@@ -1645,7 +1640,7 @@ uint8_t phy_adv_data_update(uint8_t* din, uint8_t dLen)
     {
         if(dLen > 28)
         {
-            LOG("Invalid DataLength!\n");
+            LOG("Invalid DataLength!\r\n");
             return PPlus_ERR_INVALID_LENGTH;
         }
     }
@@ -1653,7 +1648,7 @@ uint8_t phy_adv_data_update(uint8_t* din, uint8_t dLen)
     {
         if(dLen > 27)
         {
-            LOG("Invalid DataLength!\n");
+            LOG("Invalid DataLength!\r\n");
             return PPlus_ERR_INVALID_LENGTH;
         }
     }
@@ -1670,7 +1665,7 @@ uint8_t phy_adv_data_update(uint8_t* din, uint8_t dLen)
     }
     #else
     {
-        phy_tx_buf_updata(s_pubAddr,advHead,adv_buffer,dLen+4);
+        phy_tx_buf_updata(dst_pubAddr,advHead,adv_buffer,dLen+4);
     }
     #endif
     return PPlus_SUCCESS;
@@ -1687,7 +1682,7 @@ uint8_t phy_adv_data_update(uint8_t* din, uint8_t dLen)
     {
         if(dLen > 31)
         {
-            LOG("Invalid DataLength!\n");
+            LOG("Invalid DataLength!\r\n");
             return PPlus_ERR_INVALID_LENGTH;
         }
     }
@@ -1700,7 +1695,7 @@ uint8_t phy_adv_data_update(uint8_t* din, uint8_t dLen)
     }
     #else
     {
-        phy_tx_buf_updata(s_pubAddr,advHead,adv_buffer,dLen);
+        phy_tx_buf_updata(dst_pubAddr,advHead,adv_buffer,dLen);
     }
     #endif
     return PPlus_SUCCESS;

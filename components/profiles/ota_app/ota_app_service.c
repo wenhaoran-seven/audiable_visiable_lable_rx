@@ -1,4 +1,4 @@
-﻿/**************************************************************************************************
+/**************************************************************************************************
 
     Phyplus Microelectronics Limited confidential and proprietary.
     All rights reserved.
@@ -212,10 +212,10 @@ static void load_ota_version(void)
     s_ota_app.ver_test_build = (uint8_t)((reg >> 20) & 0xf);
 
     if (s_ota_app.ver_test_build)
-        LOG("OTA Boot Version: %d.%d.%d%c\n",
+        LOG("OTA Boot Version: %d.%d.%d%c\r\n",
             s_ota_app.ver_major, s_ota_app.ver_minor, s_ota_app.ver_revision, s_ota_app.ver_test_build + 'a' - 1);
     else
-        LOG("OTA Boot Version: %d.%d.%d\n",
+        LOG("OTA Boot Version: %d.%d.%d\r\n",
             s_ota_app.ver_major, s_ota_app.ver_minor, s_ota_app.ver_revision);
 }
 

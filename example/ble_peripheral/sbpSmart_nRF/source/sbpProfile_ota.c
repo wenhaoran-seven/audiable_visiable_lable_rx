@@ -517,7 +517,7 @@ bStatus_t SimpleProfile_RegisterAppCBs( simpleProfileCBs_t* appCallbacks )
 */
 bStatus_t SimpleProfile_SetParameter( uint8 param, uint8 len, void* value )
 {
-		LOG("SimpleProfile_SetParameter param:%d\n",param);
+		LOG("SimpleProfile_SetParameter param:%d\r\n",param);
     bStatus_t ret = SUCCESS;
 
     switch ( param )

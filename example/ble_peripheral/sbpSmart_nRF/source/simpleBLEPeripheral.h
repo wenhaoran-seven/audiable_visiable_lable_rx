@@ -56,27 +56,25 @@ extern "C"
 /*********************************************************************
     CONSTANTS
 */
-
+extern uint8 simpleBLEPeripheral_TaskID;
 
 // Simple BLE Peripheral Task Events
 #define SBP_START_DEVICE_EVT                           0x0001
 #define SBP_DISABLE_BLE_EVT                            0x0002
-#define SBP_PERIODIC_EVT                               0x0004
-#define SBP_RESET_ADV_EVT                              0x0008
-
-#define SBP_DISABLE_LATENCY_TEST_EVT                   0x0010
-#define SBP_ENABLE_LATENCY_EVT                         0x0020
-#define SBP_RTC_TEST_EVT                               0x0040
-#define SBP_NRF_SEND_DATA_EVT												   0x0080
+#define SBP_NRF_SEND_DATA_EVT												   0x0004
+#define SBP_ENABLE_BLE_EVT                             0x0008
 
 #define SBP_NRF_PERIODIC_TX_EVT                        0x0100
 #define SBP_NRF_START_RX_EVT                           0x0200
 #define SBP_NRF_STOP_RX_EVT                            0x0400
 #define SBP_NRF_HEART_BEAT_EVT												 0x0800
+
+#define SBP_NRF_ENTER_SLEEP_EVT												 0x0010
 /*********************************************************************
     MACROS
 */
 
+#define SOFT_VERSION			0x1001
 /*********************************************************************
     FUNCTIONS
 */

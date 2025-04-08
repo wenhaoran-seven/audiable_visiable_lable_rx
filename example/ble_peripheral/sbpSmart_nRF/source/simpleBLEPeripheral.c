@@ -65,7 +65,9 @@
 #include "hci_tl.h"
 #include "phy_plus_phy.h"
 #include "rf_phy_nrf.h"
-//#include "led_light.h"
+
+#include "user_info.h"
+#include "user_hal.h"
 /*********************************************************************
     MACROS
 */
@@ -135,22 +137,9 @@ perStatsByChan_t g_perStatsByChanTest;
     EXTERNAL VARIABLES
 */
 volatile uint8_t g_current_advType = LL_ADV_CONNECTABLE_UNDIRECTED_EVT;
-
-//extern wtnrTest_t wtnrTest;
-extern l2capSARDbugCnt_t g_sarDbgCnt;
-extern uint32 g_osal_mem_allo_cnt;
-extern uint32 g_osal_mem_free_cnt;
-
-extern uint32 counter_tracking;
-
-extern uint32 g_counter_traking_avg;
-extern uint32 g_counter_traking_cnt;
-extern uint32_t  g_TIM2_IRQ_TIM3_CurrCount;
-extern uint32_t  g_TIM2_IRQ_to_Sleep_DeltTick;
-extern uint32_t  g_osal_tick_trim;
-extern uint32_t  g_TIM2_IRQ_PendingTick;
-extern uint32_t  g_TIM2_wakeup_delay;
 extern uint16_t  s_rf_netid;
+extern uint16_t s_rf_target_netid;
+extern uint8_t dst_pubAddr[B_ADDR_LEN];
 /*********************************************************************
     EXTERNAL FUNCTIONS
 */
@@ -159,30 +148,9 @@ extern uint16_t  s_rf_netid;
 /*********************************************************************
     LOCAL VARIABLES
 */
-static uint8 simpleBLEPeripheral_TaskID;   // Task ID for internal task/event processing
-
+uint8 simpleBLEPeripheral_TaskID;   // Task ID for internal task/event processing
 static gaprole_States_t gapProfileState = GAPROLE_INIT;
-static  uint8_t notifyBuf[256];
-static uint16 notifyInterval = 0;
-static uint8 notifyPktNum = 0;
-static uint8 connEvtEndNotify =0;
-static uint16 notifyCnt = 0;
-static uint8 nrf_tx_intv=0;
 static uint8 s_rf_dlen = 0;
-
-#if(LATENCY_TEST==1)
-    static uint16 disLatInterval = 0;
-    static uint8 disLatTxNum = 0;
-    static uint16 disLatCnt = 0;
-#endif
-
-#if(APP_CFG_RPA_TEST==1)
-    static uint8  peerIrkList[RESOLVING_LIST_ENTRY_NUM][LL_ENC_IRK_LEN];
-    static uint8  localIrkList[RESOLVING_LIST_ENTRY_NUM][LL_ENC_IRK_LEN];
-    static uint8  peerAddrList[RESOLVING_LIST_ENTRY_NUM][LL_DEVICE_ADDR_LEN];
-    static uint8  peerAddrType[RESOLVING_LIST_ENTRY_NUM];
-#endif
-
 
 // GAP - SCAN RSP data (max size = 31 bytes)
 static uint8 scanRspData[] =
@@ -259,14 +227,6 @@ static uint8 advertData[] =
     0xc5 // Power - The 2's complement of the calibrated Tx Power
 };
 
-
-static uint8 otaAdvIntv         = 100;      //unit is 10ms
-static uint8 otaConnIntvMax     = DEFAULT_DESIRED_MIN_CONN_INTERVAL>>2;        //unit is 5ms
-static uint8 otaConnIntvMin     = DEFAULT_DESIRED_MAX_CONN_INTERVAL>>2;        //uiit is 5ms
-static uint8 otaConnIntvLatency = DEFAULT_DESIRED_SLAVE_LATENCY;        //
-static uint8 otaConnTimeOut     = DEFAULT_DESIRED_CONN_TIMEOUT/100;        //unit is second
-
-
 // GAP GATT Attributes
 static uint8 attDeviceName[GAP_DEVICE_NAME_LEN] = "TAG_RX ";
 /*********************************************************************
@@ -275,16 +235,9 @@ static uint8 attDeviceName[GAP_DEVICE_NAME_LEN] = "TAG_RX ";
 static void simpleBLEPeripheral_ProcessOSALMsg( osal_event_hdr_t* pMsg );
 static void peripheralStateNotificationCB( gaprole_States_t newState );
 static void simpleProfileChangeCB( uint8 paramID );
-static void updateAdvData(void);
 static void peripheralStateReadRssiCB( int8 rssi  );
 static uint8_t Smart_nRF_data_process(phy_comm_evt_t* pdata);
-uint8_t Smart_nRF_generate_ackpdu(phy_comm_evt_t* packbuf);
 
-#if(APP_CFG_RPA_TEST==1)
-    static void initResolvingList(void);
-#endif
-
-void check_PerStatsProcess(void);
 
 char* bdAddr2Str( uint8* pAddr );
 //static uint8_t simpleBLEPeripheral_ScanRequestFilterCBack(void);
@@ -315,50 +268,6 @@ static simpleProfileCBs_t simpleBLEPeripheral_SimpleProfileCBs =
 /*********************************************************************
     PUBLIC FUNCTIONS
 */
-static void user_wakeup_process(void)
-{
-		LOG("wake up\n");
-}
-
-static void user_sleep_process(void)
-{
-
-}
-
-static uint8_t button_value = 0;
-void gpio_int_wakeup_cb(GPIO_Pin_e pin,IO_Wakeup_Pol_e type)
-{
-		if(pin == P14)
-		{
-				LOG("p14\n");
-				button_value = 1;
-				osal_set_event(simpleBLEPeripheral_TaskID,SBP_NRF_SEND_DATA_EVT);
-		}
-		else if(pin == P15)
-		{
-				LOG("p15\n");
-				button_value = 2;
-				osal_set_event(simpleBLEPeripheral_TaskID,SBP_NRF_SEND_DATA_EVT);
-		}
-}
-
-static void APP_GPIO_Init(gpio_pin_e pin)
-{
-		bool value;
-	
-		hal_gpio_pin_init(pin, GPIO_INPUT);
-		value = hal_gpio_read(pin);
-		if(value == 0)
-		{
-				hal_gpio_wakeup_set(pin,POL_RISING);
-		}
-		else
-		{
-				hal_gpio_wakeup_set(pin,POL_FALLING);
-		}
-
-		hal_gpioin_register(pin,gpio_int_wakeup_cb,gpio_int_wakeup_cb);
-}
 /*********************************************************************
     @fn      SimpleBLEPeripheral_Init
 
@@ -378,9 +287,6 @@ void SimpleBLEPeripheral_Init( uint8 task_id )
     simpleBLEPeripheral_TaskID = task_id;
     // Setup the GAP
     phy_cbfunc_regist(PHY_DATA_CB,Smart_nRF_data_process);
-    #if(DEF_PHYPLUS_TRX_SUPPORT & PHYPLUS_CONFIG_RX)
-    // phy_cbfunc_regist(PHY_OPCODE_CB,Smart_nRF_generate_ackpdu);
-    #endif
     VOID GAP_SetParamValue( TGAP_CONN_PAUSE_PERIPHERAL, DEFAULT_CONN_PAUSE_PERIPHERAL );
     // Setup the GAP Peripheral Role Profile
     {
@@ -455,27 +361,6 @@ void SimpleBLEPeripheral_Init( uint8 task_id )
     SimpleProfile_AddService( GATT_ALL_SERVICES );  // Simple GATT Profile
     // Setup the SimpleProfile Characteristic Values
     {
-        // uint8  uuid_setting[IBEACON_UUID_LEN] =
-        // {
-        //     0xFD,
-        //     0xA5,
-        //     0x06,
-        //     0x93,
-        //     0xA4,
-        //     0xE2,
-        //     0x4F,
-        //     0xB1,
-        //     0xAF,
-        //     0xCF,
-        //     0xC6,
-        //     0xEB,
-        //     0x07,
-        //     0x64,
-        //     0x78,
-        //     0x25
-        // };
-        // uint16 major = 0x2774;
-        // uint16 minor = 0x6bed;
         uint8 power = 0x0f;
         uint8 reset[IBEACON_ATT_LONG_PKT];
 
@@ -491,50 +376,26 @@ void SimpleBLEPeripheral_Init( uint8 task_id )
         SimpleProfile_SetParameter( SIMPLEPROFILE_CHAR5, IBEACON_ATT_LONG_PKT, &reset );
     }
 
-    //intial notifyBuf
-    for(int i =0 ; i<255; i++)
-        notifyBuf[i]=i;
-
     // Register callback with SimpleGATTprofile
     VOID SimpleProfile_RegisterAppCBs( &simpleBLEPeripheral_SimpleProfileCBs );
-    #if (1)
-    {
-        uint8_t mtuSet = 247;
-        llInitFeatureSet2MPHY(TRUE);
-        llInitFeatureSetDLE(TRUE);
-        ATT_SetMTUSizeMax(mtuSet);
-        LOG("[2Mbps | DLE | MTU %d] \n",mtuSet);
-    }
-    #else
-    ATT_SetMTUSizeMax(23);
-    llInitFeatureSet2MPHY(FALSE);
-    llInitFeatureSetDLE(FALSE);
-    #endif
+
+		uint8_t mtuSet = 247;
+		llInitFeatureSet2MPHY(TRUE);
+		llInitFeatureSetDLE(TRUE);
+		ATT_SetMTUSizeMax(mtuSet);
+		LOG("[2Mbps | DLE | MTU %d] \r\n",mtuSet);
+
     // Setup a delayed profile startup
     osal_set_event( simpleBLEPeripheral_TaskID, SBP_START_DEVICE_EVT );
     // for receive HCI complete message
     GAP_RegisterForHCIMsgs(simpleBLEPeripheral_TaskID);
-    #if(APP_CFG_RPA_TEST)
-    // ========================= For Resolving Private Address testing
-    uint8 addrType = ADDRTYPE_PUBLIC;
-    initResolvingList();
-    GAPRole_SetParameter(GAPROLE_ADV_DIRECT_TYPE, 1, &addrType);
-    GAPRole_SetParameter(GAPROLE_ADV_DIRECT_ADDR, LL_DEVICE_ADDR_LEN, peerAddrList[0]);
-    LOG("======== RPA Init ========\n");
-    #endif
-    #if(DBG_RTC_TEST==1)
-    osal_start_timerEx(simpleBLEPeripheral_TaskID, SBP_RTC_TEST_EVT, 1000);
-    LOG("======== RTC TEST ========\n");
-    #endif
+
     LL_PLUS_PerStats_Init(&g_perStatsByChanTest);
-    LOG("======================SimpleBLEPeripheral_Init Done====================\n");
+    LOG("SimpleBLEPeripheral_Init Done====================RX version:0x%04X\r\n",SOFT_VERSION);
 		
-		APP_GPIO_Init(P14);
-		APP_GPIO_Init(P15);
-		hal_pwrmgr_register(MOD_USR1,user_sleep_process,user_wakeup_process);
-		hal_pwrmgr_lock(MOD_USR1);
-		osal_set_event(simpleBLEPeripheral_TaskID, SBP_NRF_START_RX_EVT);
-		osal_start_timerEx(simpleBLEPeripheral_TaskID,SBP_NRF_HEART_BEAT_EVT,1000);
+		User_Hal_Init();
+		
+		osal_start_timerEx(simpleBLEPeripheral_TaskID,SBP_NRF_HEART_BEAT_EVT,100);
 }
 
 /*********************************************************************
@@ -586,144 +447,23 @@ uint16 SimpleBLEPeripheral_ProcessEvent( uint8 task_id, uint16 events )
 		
     if ( events & SBP_DISABLE_BLE_EVT )
     {
-				LOG("disable ble\n");
+				LOG("disable ble\r\n");
 				uint8_t initial_advertising_enable = FALSE;
 				GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &initial_advertising_enable );
 			
         return ( events ^ SBP_DISABLE_BLE_EVT );
     }
 
-    #if (1==DBG_RTC_TEST)
-
-    if (events & SBP_RTC_TEST_EVT)
-    {
-        //osal_start_timerEx(simpleBLEPeripheral_TaskID, SBP_RTC_TEST_EVT, 5000);
-        #if(DEBUG_INFO)
-        extern void ll_dbg_show(void);
-        ll_dbg_show();
-        #endif
-        return (events ^ SBP_RTC_TEST_EVT);
-    }
-
-    #endif
 
     // enable adv
-    if ( events & SBP_RESET_ADV_EVT )
+    if ( events & SBP_ENABLE_BLE_EVT )
     {
-				LOG("enable ble\n");
+				LOG("enable ble\r\n");
         uint8 initial_advertising_enable = TRUE;
         GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &initial_advertising_enable );
-        return ( events ^ SBP_RESET_ADV_EVT );
+        return ( events ^ SBP_ENABLE_BLE_EVT );
     }
 
-    // notify
-    if ( events & SBP_PERIODIC_EVT )
-    {
-        for(int i=0; i<notifyPktNum; i++)
-        {
-            notifyBuf[0]=HI_UINT16(notifyCnt);
-            notifyBuf[1]=LO_UINT16(notifyCnt);
-
-            if(i==0)
-            {
-                int8 rssi;
-                LL_ReadRssi(0,&rssi);
-                uint16 foff;
-                LL_ReadFoff(0,&foff);
-                uint8 carrSens;
-                LL_ReadCarrSens(0, &carrSens);
-                notifyBuf[17]=rssi;
-                notifyBuf[18]=0xff&((foff-512)>>2);//4KHz resolution
-                notifyBuf[19]=carrSens;
-            }
-
-            uint8 status= simpleProfile_Notify(SIMPLEPROFILE_CHAR6,ATT_GetCurrentMTUSize(0)-3,notifyBuf);
-
-            if(SUCCESS==status)
-            {
-                LOG("[NOTF_TX] %02x %4x\n",status,notifyCnt);
-                notifyCnt++;
-            }
-            else
-            {
-                LOG("[NOTF_TX ERR] %02x %4x\n",status,notifyCnt);
-                break;
-            }
-        }
-
-        if(notifyInterval>0 )
-        {
-            if(connEvtEndNotify==0)
-                osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_PERIODIC_EVT, notifyInterval );
-        }
-        else
-        {
-            osal_stop_timerEx( simpleBLEPeripheral_TaskID, SBP_PERIODIC_EVT );
-            notifyCnt=0;
-        }
-
-        return ( events ^ SBP_PERIODIC_EVT );
-    }
-
-    #if(LATENCY_TEST==1)
-
-    if ( events & SBP_DISABLE_LATENCY_TEST_EVT )
-    {
-        if(disLatInterval>0 )
-        {
-            uint8 ret = LL_PLUS_DisableSlaveLatency(0);
-            //enable latency after 6 connIntv
-            uint16 connIntv;
-            GAPRole_GetParameter(GAPROLE_CONN_INTERVAL,&connIntv);
-            connIntv = ((connIntv<<2)+connIntv)>>2;//*1.25
-            osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_ENABLE_LATENCY_EVT, connIntv*6 );
-            //enable latency after 6 connIntv
-            uint16 latency;
-            GAPRole_GetParameter(GAPROLE_CONN_LATENCY,&latency);
-            //re-trigger evt
-            uint32 nextIntv = disLatInterval+(disLatCnt%latency)*connIntv;
-            osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_DISABLE_LATENCY_TEST_EVT, nextIntv );
-            LOG("[DISLAT] st 0x%02x intv %d\n",ret,nextIntv);
-            //tx data
-            uint8 status;
-
-            for(uint8 i=0; i<disLatTxNum; i++)
-            {
-                notifyBuf[0]=HI_UINT16(0xff);
-                notifyBuf[1]=LO_UINT16(0xff);
-                notifyBuf[2]=HI_UINT16(disLatCnt);
-                notifyBuf[3]=LO_UINT16(disLatCnt);
-                status= simpleProfile_Notify(SIMPLEPROFILE_CHAR6,ATT_GetCurrentMTUSize(0)-3,notifyBuf);
-
-                if(SUCCESS==status)
-                {
-                    LOG("[DISLAT_TX] %02x %4x\n",status,disLatCnt);
-                    disLatCnt++;
-                }
-                else
-                {
-                    LOG("[DISLAT_TX] %02x%4x\n",status,disLatCnt);
-                }
-            }
-        }
-        else
-        {
-            osal_stop_timerEx( simpleBLEPeripheral_TaskID, SBP_DISABLE_LATENCY_TEST_EVT );
-            disLatCnt=0;
-            disLatTxNum=0;
-        }
-
-        return ( events ^ SBP_DISABLE_LATENCY_TEST_EVT );
-    }
-
-    if ( events & SBP_ENABLE_LATENCY_EVT )
-    {
-        uint8 ret = LL_PLUS_EnableSlaveLatency(0);
-        LOG("[EN_LAT] 0x%02x\n",ret);
-        return ( events ^ SBP_ENABLE_LATENCY_EVT );
-    }
-
-    #endif
 
     if ( events & SBP_NRF_PERIODIC_TX_EVT )
     {
@@ -753,91 +493,70 @@ uint16 SimpleBLEPeripheral_ProcessEvent( uint8 task_id, uint16 events )
         advdata[dlen-2] = advCnt>>8;
         advdata[dlen-1] = advCnt&0xff;
 				
-        ret=phy_rf_start_tx(advdata,dlen, 0, 0x0a01);
-        if(ret==PPlus_SUCCESS)
+        ret = phy_rf_start_tx(advdata,dlen, 0, DEFAULT_TARGET_NETID);
+        if(ret == PPlus_SUCCESS)
             advCnt++;
 
-        LOG_DEBUG("%d %d %d\n",ret,advCnt,phy_rf_get_current_status());
-        osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_PERIODIC_TX_EVT, nrf_tx_intv*10 );
+        LOG_DEBUG("%d %d %d\r\n",ret,advCnt,phy_rf_get_current_status());
+        osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_PERIODIC_TX_EVT, 1000 );
         return ( events ^ SBP_NRF_PERIODIC_TX_EVT );
     }
 
     if ( events & SBP_NRF_START_RX_EVT )
     {
-				uint8_t ret=phy_rf_start_rx(5*1000);
-				if(ret==PPlus_SUCCESS)
+				uint8_t ret = phy_rf_start_rx(1*1000);
+				if(ret == PPlus_SUCCESS)
 				{
-						//LOG("[start rx] Ok \n");
+						//LOG("[start rx] Ok \r\n");
+						osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_STOP_RX_EVT, 5);
 				}
 				else
 				{
-						LOG("[start rx] Err ret %x status %x\n",ret,phy_rf_get_current_status());
+						LOG("[start rx] Err ret %x status %x\r\n",ret,phy_rf_get_current_status());
+						osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_STOP_RX_EVT, 10);
 				}
-				osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_STOP_RX_EVT, 5);
+				
         return ( events ^ SBP_NRF_START_RX_EVT );
     }
 		
 		if ( events & SBP_NRF_STOP_RX_EVT )
 		{
-				uint8_t ret=phy_rf_stop_rx();
-				if(ret==PPlus_SUCCESS)
+				uint8_t ret = phy_rf_stop_rx();
+				if(ret == PPlus_SUCCESS)
 				{
-						//LOG("[stop rx] Ok\n");
+						//LOG("[stop rx] Ok\r\n");
+						osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_START_RX_EVT, 1000);
 				}
 				else
 				{
-						LOG("[stop rx] Err ret %x status %x\n",ret,phy_rf_get_current_status());
+						LOG("[stop rx] Err ret %x status %x\r\n",ret,phy_rf_get_current_status());
 				}
-				osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_START_RX_EVT, 2000);
+				
 				return ( events ^ SBP_NRF_STOP_RX_EVT );
 		}
 		
 		if(events & SBP_NRF_HEART_BEAT_EVT)
     {
-        #if(DEF_PHYPLUS_MESH_SUPPORT == PHYPLUS_MESH_ENABLE && DEF_PHYPLUS_NRF_SUPPORT == PHYPLUS_NRF_DISABLE && DEF_PHYPLUS_TRX_SUPPORT == PHYPLUS_CONFIG_TRX_ALL)
-				uint8_t heartbeat_pdata[27] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B};
-				uint16_t heartbeat_target_netid = 0;
-				heartbeat_target_netid = 0x0A01;
-					
-				phy_set_tx_maxtime(1000);
-				LOG_DEBUG("heart beat:targetnetid:0x%04x\n",heartbeat_target_netid);
-        phy_rf_stop_tx();
-        phy_rf_stop_rx();
-        uint8_t ret = phy_rf_start_tx( heartbeat_pdata, sizeof(heartbeat_pdata), 0, heartbeat_target_netid);
-			
-        #endif
+				User_Beacon_Heart_Beat();
         osal_start_timerEx(simpleBLEPeripheral_TaskID,SBP_NRF_HEART_BEAT_EVT,60000);
         return(events ^ SBP_NRF_HEART_BEAT_EVT);
     }
 		
 		if(events & SBP_NRF_SEND_DATA_EVT)
     {
-				uint8_t pdata[32] = {0};
-        uint16_t target_netid = 0;
-
-				if(button_value == 1)
-				{
-						target_netid = (s_rf_netid & 0xFF00) | 0x0001;
-				}
-				else if(button_value == 2)
-				{
-						target_netid = (s_rf_netid & 0xFF00) | 0x0002;
-				}
-				button_value = 0;
-				
-        if(target_netid == s_rf_netid)
-        {
-            target_netid = (s_rf_netid & 0xFF00) | 0x0000;
-        }
-
-        phy_set_tx_maxtime(1000);
-        LOG_DEBUG("target net id: %x\n",target_netid);
-        phy_rf_stop_tx();
-        phy_rf_stop_rx();
-        uint8_t ret = phy_rf_start_tx( pdata, 27, 0, target_netid);
+				uint8_t test_data[10] = {0,1,2,3,4,5,6,7,8,9};
+				User_Beacon_Send_Data(DEFALUT_TX_DURATION,DEFALUT_TX_INTERVAL,DEFAULT_TARGET_NETID,test_data, sizeof(test_data));
+			
 				return(events ^ SBP_NRF_SEND_DATA_EVT);
 		}
 
+		if(events & SBP_NRF_ENTER_SLEEP_EVT)
+    {
+				hal_pwrmgr_unlock(MOD_USR1);
+			
+				return(events ^ SBP_NRF_ENTER_SLEEP_EVT);
+		}
+		
     // Discard unknown events
     return 0;
 }
@@ -863,7 +582,7 @@ static void simpleBLEPeripheral_ProcessOSALMsg( osal_event_hdr_t* pMsg )
         {
         case HCI_COMMAND_COMPLETE_EVENT_CODE:
             pHciMsg = (hciEvt_CmdComplete_t*)pMsg;
-            LOG("==> HCI_COMMAND_COMPLETE_EVENT_CODE: %x\n", pHciMsg->cmdOpcode);
+            LOG("==> HCI_COMMAND_COMPLETE_EVENT_CODE: %x\r\n", pHciMsg->cmdOpcode);
             //safeToDealloc = gapProcessHCICmdCompleteEvt( (hciEvt_CmdComplete_t *)pMsg );
             break;
 
@@ -885,11 +604,7 @@ static void simpleBLEPeripheral_ProcessOSALMsg( osal_event_hdr_t* pMsg )
 */
 static void peripheralStateReadRssiCB( int8  rssi )
 {
-//    notifyBuf[15]++;
-//    notifyBuf[16]=rssi;
-//    notifyBuf[17]=HI_UINT16(g_conn_param_foff);
-//    notifyBuf[18]=LO_UINT16(g_conn_param_foff);;
-//    notifyBuf[19]=g_conn_param_carrSens;
+
 }
 
 /*********************************************************************
@@ -903,7 +618,7 @@ static void peripheralStateReadRssiCB( int8  rssi )
 */
 static void peripheralStateNotificationCB( gaprole_States_t newState )
 {
-		LOG("peripheralStateNotificationCB newState:%d\n",newState);
+		LOG("peripheralStateNotificationCB newState:%d\r\n",newState);
     switch ( newState )
     {
     case GAPROLE_STARTED:
@@ -912,21 +627,7 @@ static void peripheralStateNotificationCB( gaprole_States_t newState )
         uint8 str_addr[14]= {0};
         uint8 initial_advertising_enable = FALSE;//true
         GAPRole_GetParameter(GAPROLE_BD_ADDR, ownAddress);
-        #if(0)
-        uint8 systemId[DEVINFO_SYSTEM_ID_LEN];
-        // use 6 bytes of device address for 8 bytes of system ID value
-        systemId[0] = ownAddress[0];
-        systemId[1] = ownAddress[1];
-        systemId[2] = ownAddress[2];
-        // set middle bytes to zero
-        systemId[4] = 0x00;
-        systemId[3] = 0x00;
-        // shift three bytes up
-        systemId[7] = ownAddress[5];
-        systemId[6] = ownAddress[4];
-        systemId[5] = ownAddress[3];
-        DevInfo_SetParameter(DEVINFO_SYSTEM_ID, DEVINFO_SYSTEM_ID_LEN, systemId);
-        #endif
+
         osal_memcpy(&str_addr[0],bdAddr2Str(ownAddress),14);
         osal_memcpy(&scanRspData[11],&str_addr[6],8);
         osal_memcpy(&attDeviceName[9],&str_addr[6],8);
@@ -934,31 +635,22 @@ static void peripheralStateNotificationCB( gaprole_States_t newState )
         // Set the GAP Characteristics
         GGS_SetParameter( GGS_DEVICE_NAME_ATT, GAP_DEVICE_NAME_LEN, attDeviceName );
         GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &initial_advertising_enable );
-        #if(APP_CFG_RPA_TEST)
-
-        // init RPA list and enable resolving address
-        for (int i = 0; i < 3; i ++)
-            HCI_LE_AddDevToResolvingListCmd(peerAddrType[i], peerAddrList[i], peerIrkList[i], localIrkList[i]);
-
-        HCI_LE_SetResolvablePrivateAddressTimeoutCmd(60);
-        HCI_LE_SetAddressResolutionEnableCmd(TRUE);
-        #endif
-        //osal_start_timerEx(simpleBLEPeripheral_TaskID, SBP_RESET_ADV_EVT, 500);
-        //osal_set_event(simpleBLEPeripheral_TaskID, SBP_RESET_ADV_EVT);
+				
+				GAPRole_GetParameter(GAPROLE_BD_ADDR,Device_Mac_Addr);
+				osal_memcpy(dst_pubAddr,Device_Mac_Addr,B_ADDR_LEN);
+				dst_pubAddr[0] = Device_Mac_Addr[5];
+				dst_pubAddr[1] = Device_Mac_Addr[4];
+				dst_pubAddr[2] = Device_Mac_Addr[3];
+				dst_pubAddr[3] = Device_Mac_Addr[2];
+				dst_pubAddr[4] = Device_Mac_Addr[1];
+				dst_pubAddr[5] = Device_Mac_Addr[0];
+				LOG("macADDR:0x%02X%02X%02X%02X%02X%02X\r\n",dst_pubAddr[0],dst_pubAddr[1],dst_pubAddr[2],dst_pubAddr[3],dst_pubAddr[4],dst_pubAddr[5]);
     }
     break;
 
     case GAPROLE_ADVERTISING:
     {
-        osal_stop_timerEx(simpleBLEPeripheral_TaskID, SBP_PERIODIC_EVT);
-        notifyCnt=0;
-        notifyInterval = 0;
-        #if(LATENCY_TEST==1)
-        osal_stop_timerEx(simpleBLEPeripheral_TaskID, SBP_DISABLE_LATENCY_TEST_EVT);
-        disLatInterval = 0;
-        disLatCnt = 0;
-        disLatTxNum=0;
-        #endif
+
     }
     break;
 
@@ -983,7 +675,7 @@ static void peripheralStateNotificationCB( gaprole_States_t newState )
     }
 
     gapProfileState = newState;
-    LOG("[GAP ROLE %d]\n",newState);
+    LOG("[GAP ROLE %d]\r\n",newState);
     VOID gapProfileState;
 }
 
@@ -1000,295 +692,19 @@ static void peripheralStateNotificationCB( gaprole_States_t newState )
 static void simpleProfileChangeCB( uint8 paramID )
 {
     uint8 newValue[IBEACON_ATT_LONG_PKT];
-		LOG("simpleProfileChangeCB paramID %02x \n",paramID);
+		LOG("simpleProfileChangeCB paramID %02x \r\n",paramID);
     switch( paramID )
     {
     case SIMPLEPROFILE_CHAR5:
         SimpleProfile_GetParameter( SIMPLEPROFILE_CHAR5, newValue );
-        LOG("[WRT_ATT] %02x \n",newValue[0]);
-
-        //===============================================================================
-        // 0xff reset to connectable adv
-        if (newValue[0] == 0xff)
-        {
-            otaAdvIntv = newValue[1];
-            LOG("[AdvIntv CONNECT] %04d\n",otaAdvIntv*10);
-            // option:
-            // 1. reset
-            // 2. reset advertisement
-            g_current_advType = LL_ADV_CONNECTABLE_UNDIRECTED_EVT;
-            pGlobal_config[ADV_CHANNEL_INTERVAL] = 1400;//6250;
-            VOID updateAdvData();
-        }
-        else if(newValue[0]==0xfe)
-        {
-            otaAdvIntv = newValue[1];
-            LOG("[AdvIntv NONCONN] %04d\n",otaAdvIntv*10);
-            // option:
-            // 1. reset
-            // 2. reset advertisement
-            g_current_advType = LL_ADV_NONCONNECTABLE_UNDIRECTED_EVT;
-            pGlobal_config[ADV_CHANNEL_INTERVAL] = 600;//6250;
-            VOID updateAdvData();
-        }
-        //===============================================================================
-        // check per stats
-        else if(newValue[0]==0xfd)
-        {
-            check_PerStatsProcess();
-        }
-        else if(newValue[0]== 0x00 )
-        {
-            connEvtEndNotify = (newValue[1]&0x80)>>7;
-            notifyInterval   = (newValue[1]&0x7f)*5;
-            notifyPktNum     = newValue[2];
-            uint16 connIntv;
-            GAPRole_GetParameter(GAPROLE_CONN_INTERVAL,&connIntv);
-            connIntv = ((connIntv<<2)+connIntv)>>2;//*1.25
-
-            if(connEvtEndNotify>0)
-                notifyInterval = connIntv;
-
-            if(notifyInterval>0)
-            {
-                if(notifyInterval<connIntv)
-                {
-                    notifyPktNum=(notifyInterval<<3)/connIntv;
-                }
-
-                if(notifyPktNum==0)
-                {
-                    notifyPktNum=1;
-                    notifyInterval = (connIntv+1)>>2;
-                }
-
-                if(connEvtEndNotify>0)
-                {
-                    HCI_PPLUS_ConnEventDoneNoticeCmd(simpleBLEPeripheral_TaskID, SBP_PERIODIC_EVT);
-                }
-                else
-                {
-                    HCI_PPLUS_ConnEventDoneNoticeCmd(simpleBLEPeripheral_TaskID, NULL);
-                    osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_PERIODIC_EVT, notifyInterval );
-                }
-            }
-            else
-            {
-                osal_stop_timerEx(simpleBLEPeripheral_TaskID, SBP_PERIODIC_EVT);
-                notifyCnt=0;
-            }
-
-            if(connEvtEndNotify)
-            {
-                LOG("[Notf_Conn] p%d ni%d ci%d\n",notifyPktNum,notifyInterval,connIntv);
-            }
-            else
-            {
-                LOG("[Notify   ] p%d ni%d ci%d\n",notifyPktNum,notifyInterval,connIntv);
-            }
-        }
-        //===============================================================================
-        // [0x01 a1 a2 a3 a4 ] : cont config ,a1
-        else if(newValue[0]==0x01)
-        {
-            otaConnIntvMin      = newValue[1];
-            otaConnIntvMax      = newValue[2];
-            otaConnIntvLatency  = newValue[3];
-            otaConnTimeOut      = newValue[4];
-            uint16 desired_min_interval = (otaConnIntvMin<<2)<6 ? 6:(otaConnIntvMin<<2);
-            uint16 desired_max_interval = (otaConnIntvMax<<2)<6 ? 6:(otaConnIntvMax<<2);
-            uint16 desired_slave_latency = otaConnIntvLatency;
-            uint16 desired_conn_timeout = otaConnTimeOut*100;
-            uint8 updateConnParams = true;
-            LOG("[ConnPara] %04d %04d L%02d T%02d\n",desired_min_interval,
-                desired_max_interval,
-                desired_slave_latency,
-                desired_conn_timeout);
-            GAPRole_SetParameter( GAPROLE_MIN_CONN_INTERVAL, sizeof( uint16 ), &desired_min_interval );
-            GAPRole_SetParameter( GAPROLE_MAX_CONN_INTERVAL, sizeof( uint16 ), &desired_max_interval );
-            GAPRole_SetParameter( GAPROLE_SLAVE_LATENCY, sizeof( uint16 ), &desired_slave_latency );
-            GAPRole_SetParameter( GAPROLE_TIMEOUT_MULTIPLIER, sizeof( uint16 ), &desired_conn_timeout );
-            GAPRole_SetParameter( GAPROLE_PARAM_UPDATE_REQ, sizeof( uint8 ), &updateConnParams );
-        }
-        //===============================================================================
-        // [0x02 a1 a2] : max mtu size
-        else if(newValue[0]==0x02)
-        {
-            g_ATT_MTU_SIZE_MAX = newValue[1];
-            LOG("[MTU SIZE MAX] %02d\n",g_ATT_MTU_SIZE_MAX);
-        }
-        //===============================================================================
-        // [0x03 a1 a2] :set pdu length  ,a1 is the pdulength
-        else if(newValue[0]==0x03)
-        {
-            uint8 pduLen = newValue[1];
-            uint16 txTime = (pduLen+10+4)<<3;
-            HCI_LE_SetDataLengthCmd(0,pduLen, txTime);
-        }
-        //===============================================================================
-        // [0x05 a1 a2] :set phy mode
-        else if(newValue[0]==0x05)
-        {
-            uint8 allPhy = newValue[1];
-            uint8 txPhy  = newValue[2];
-            uint8 defPhy  = newValue[3];
-
-            if(defPhy>0)
-            {
-                HCI_LE_SetDefaultPhyMode(0,allPhy, defPhy, defPhy);
-            }
-            else
-            {
-                HCI_LE_SetDefaultPhyMode(0,allPhy, 0x03, 0x03);
-            }
-
-            HCI_LE_SetPhyMode(0,allPhy, txPhy,txPhy,0);//tx/rx set as same phy
-        }
-
-        //===============================================================================
-        // [0x06 a1] :set disable latency test interval
-        #if(LATENCY_TEST==1)
-        else if(newValue[0]==0x06)
-        {
-            uint8 evtIntv = newValue[1];
-            uint8 TxNum = newValue[2];
-            uint16 connIntv;
-            GAPRole_GetParameter(GAPROLE_CONN_INTERVAL,&connIntv);
-            connIntv = ((connIntv<<2)+connIntv)>>2;//*1.25
-            uint16 latency;
-            GAPRole_GetParameter(GAPROLE_CONN_LATENCY,&latency);
-            LOG("[DisLat] C%04d L%02d Evt%02d\n", connIntv,
-                latency,
-                evtIntv);
-
-            if(evtIntv==0 || latency==0)
-            {
-                disLatInterval = 0;
-                osal_stop_timerEx(simpleBLEPeripheral_TaskID, SBP_DISABLE_LATENCY_TEST_EVT);
-            }
-            else
-            {
-                disLatInterval = evtIntv*connIntv;
-                disLatTxNum   = TxNum;
-                osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_DISABLE_LATENCY_TEST_EVT, disLatInterval );
-            }
-        }
-
-        #endif
-        #if(DEF_PHYPLUS_TRX_SUPPORT & PHYPLUS_CONFIG_RX)
-        else if(newValue[0]==0x12)
-        {
-            uint8_t ret;
-
-            if(newValue[1]==0x00)
-            {
-                ret= phy_rf_stop_rx();
-                LOG("Stop 2.4G RX ret %d\n", ret);
-            }
-            else
-            {
-                ret= phy_rf_start_rx(newValue[1]*1000);
-                LOG("[PPP RX] rxTO %dms   ret %d\n",newValue[1], ret);
-
-                if(ret == 0)
-                {
-                    LOG("start 2.4G RX\n");
-                }
-            }
-        }
-
-        #endif
-        #if(DEF_PHYPLUS_TRX_SUPPORT & PHYPLUS_CONFIG_TX)
-        else if(newValue[0]==0x11)
-        {
-            if(newValue[1] == 0)
-            {
-                phy_rf_stop_tx();
-                osal_stop_timerEx(simpleBLEPeripheral_TaskID, SBP_NRF_PERIODIC_TX_EVT);
-                LOG("Stop 2.4G TX\n");
-            }
-            else
-            {
-                nrf_tx_intv = newValue[1] * 10;
-                s_rf_dlen = newValue[2];
-                osal_set_event(simpleBLEPeripheral_TaskID, SBP_NRF_PERIODIC_TX_EVT);
-                LOG("start 2.4G TX\n");
-            }
-        }
-
-        #endif
-        // else if(newValue[0]==0x89)
-        // {
-        //     LIGHT_ON_OFF(newValue[1],newValue[2],newValue[3]);
-        // }
-        // else if(newValue[0]==0x8A)
-        // {
-        //     light_color_t color = (light_color_t)newValue[1];
-        //     light_color_quickSet(color);
-        // }
+        LOG("[WRT_ATT] %02x \r\n",newValue[0]);
         break;
 
     default:
-        // not process other attribute change
         break;
     }
 }
 
-
-/*********************************************************************
-    @fn      updateAdvData
-
-    @brief   update adv data and change the adv type
-
-    @param   none
-
-    @return  none
-*/
-static void updateAdvData(void)
-{
-		LOG("updateAdvData");
-    uint8  new_uuid[IBEACON_UUID_LEN];
-    uint16  major;
-    uint16  minor;
-    uint8   power;
-    // 1. get the new setting from GATT attributes
-    SimpleProfile_GetParameter( SIMPLEPROFILE_CHAR1, new_uuid );
-    SimpleProfile_GetParameter( SIMPLEPROFILE_CHAR2, &major );
-    SimpleProfile_GetParameter( SIMPLEPROFILE_CHAR3, &minor );
-    SimpleProfile_GetParameter( SIMPLEPROFILE_CHAR4, &power );
-    // 2. update adv data storage
-    //set UUID
-    VOID osal_memcpy(&advertData[9], new_uuid, IBEACON_UUID_LEN);
-    // set major
-    advertData[25] = LO_UINT16( major );
-    advertData[26] = HI_UINT16( major );
-    // set minor
-    advertData[27] = LO_UINT16( minor );
-    advertData[28] = HI_UINT16( minor );
-    // set power
-    advertData[29] = power;
-    // 3. disconnect all connection
-    GAPRole_TerminateConnection();
-    // 4. close advert
-    uint8 initial_advertising_enable = FALSE;
-    GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &initial_advertising_enable );
-    // 5. update adv data
-    // 5.1 update adv type
-    uint8 advType = g_current_advType;
-    GAPRole_SetParameter( GAPROLE_ADV_EVENT_TYPE, sizeof( uint8 ), &advType );
-    uint16 advInt = otaAdvIntv<<4;
-    GAP_SetParamValue( TGAP_LIM_DISC_ADV_INT_MIN, advInt );
-    GAP_SetParamValue( TGAP_LIM_DISC_ADV_INT_MAX, advInt );
-    GAP_SetParamValue( TGAP_GEN_DISC_ADV_INT_MIN, advInt );
-    GAP_SetParamValue( TGAP_GEN_DISC_ADV_INT_MAX, advInt );
-    // 5.2 update advert broadcast
-    GAPRole_SetParameter( GAPROLE_ADVERT_DATA, sizeof( advertData ), advertData );
-    // 5.3 set TxPower
-    g_rfPhyTxPower = power;
-    rf_phy_set_txPower(power);
-    // 6. set reset advertisement event, note that GAP/LL will process close adv event in advance
-    //osal_start_timerEx(simpleBLEPeripheral_TaskID, SBP_RESET_ADV_EVT,5000);
-}
 
 /*********************************************************************
     @fn      bdAddr2Str
@@ -1319,67 +735,10 @@ char* bdAddr2Str( uint8* pAddr )
     return str;
 }
 
-#if(APP_CFG_RPA_TEST==1)
-static void initResolvingList(void)
-{
-    int i;
-    uint8 temp;
-
-    for (i = 0; i < RESOLVING_LIST_ENTRY_NUM; i++)
-    {
-        osal_memset(&peerIrkList[i], (i + 1), LL_ENC_IRK_LEN);
-        osal_memset(&localIrkList[i], (i + 1), LL_ENC_IRK_LEN);
-        temp = ((i + 1) << 4) | (i + 1);
-        osal_memset(&peerAddrList[i], temp, LL_DEVICE_ADDR_LEN);
-        peerAddrType[i] = LL_DEV_ADDR_TYPE_PUBLIC;      // LL_DEV_ADDR_TYPE_RANDOM
-    }
-}
-#endif
-
-
-void check_PerStatsProcess(void)
-{
-    perStats_t perStats;
-    uint16_t perRxNumTotal=0;
-    uint16_t perRxCrcErrTotal=0;
-    uint16_t perTxNumTotal=0;
-    uint16_t perTxAckTotal=0;
-    uint16_t perRxToCntTotal=0;
-    uint16_t perConnEvtTotal=0;
-    LOG("[PER STATS Notify]\r");
-    LOG("----- ch connN rxNum rxCrc rxToN txAck txRty \r");
-
-    for(uint8 i=0; i<37; i++)
-    {
-        LL_PLUS_PerStasReadByChn(i,&perStats);
-        LOG("[PER] %02d %05d %05d %05d %05d %05d %05d\n",i,perStats.connEvtCnt,
-            perStats.rxNumPkts,
-            perStats.rxNumCrcErr,
-            perStats.rxToCnt,
-            perStats.TxNumAck,
-            perStats.txNumRetry);
-        perConnEvtTotal+= perStats.connEvtCnt;
-        perRxNumTotal+= perStats.rxNumPkts;
-        perRxCrcErrTotal+= perStats.rxNumCrcErr;
-        perRxToCntTotal+= perStats.rxToCnt;
-        perTxAckTotal+= perStats.TxNumAck;
-        perTxNumTotal+= perStats.txNumRetry;
-    }
-
-    LOG("TOTAL ch connN rxNum rxCrc rxToN txAck txRty \r");
-    LOG("\n[PER] -- %05d %05d %05d %05d %05d %05d\n",perConnEvtTotal,
-        perRxNumTotal,
-        perRxCrcErrTotal,
-        perRxToCntTotal,
-        perTxAckTotal,
-        perTxNumTotal);
-    LL_PLUS_PerStatsReset();
-}
-
 uint8_t Smart_nRF_data_process(phy_comm_evt_t* pdata)
 {
     #if(DEF_PHYPLUS_AUTOACK_SUPPORT==1)
-    LOG_DEBUG("OPCODE=%x  datalen=%d\n",pdata->type,pdata->len);
+    //LOG_DEBUG("OPCODE=%x  datalen=%d\r\n",pdata->type,pdata->len);
     #if(DEF_PHYPLUS_NRF_SUPPORT==PHYPLUS_NRF_ENABLE)
     uint8_t status = phy_rf_get_current_status();
 
@@ -1398,24 +757,30 @@ uint8_t Smart_nRF_data_process(phy_comm_evt_t* pdata)
 
     if(pdata->type == PHYPLUS_STX_DONE_TYPE)
     {
-        LOG_DEBUG("STX Done Reporting\n");
+        LOG_DEBUG("STX Done Reporting\r\n");		
+				phy_rf_stop_tx();
+				phy_rf_stop_rx();
+				osal_stop_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_START_RX_EVT);
+				osal_stop_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_STOP_RX_EVT);
+				osal_start_timerEx( simpleBLEPeripheral_TaskID, SBP_NRF_START_RX_EVT,1000);
     }
     else if(PHYPLUS_GET_ACK_BIT(pdata->type))
     {
         LOG_DEBUG("It's rf CB ack:");
-        my_dump_byte(pdata->data,pdata->len);
+				User_Process_Beacon_Data(pdata);
     }
     else if(PHYPLUS_GET_NEEDACK_BIT(pdata->type))
     {
         LOG_DEBUG("It's rf CB data:");
-        my_dump_byte(pdata->data,pdata->len);
+				User_Process_Beacon_Data(pdata);
     }
     else if(pdata->len != NULL)
     {
         LOG_DEBUG("It's rf broadcast data:");
-        my_dump_byte(pdata->data,pdata->len);
+				User_Process_Beacon_Data(pdata);
     }
-
+		
+		
     #endif
     #else
     #if(DEF_PHYPLUS_NRF_SUPPORT==PHYPLUS_NRF_ENABLE)
@@ -1428,28 +793,6 @@ uint8_t Smart_nRF_data_process(phy_comm_evt_t* pdata)
     #endif
     return PPlus_SUCCESS;
 }
-
-#if(DEF_PHYPLUS_TRX_SUPPORT & PHYPLUS_CONFIG_RX)
-uint8_t Smart_nRF_generate_ackpdu(phy_comm_evt_t* packbuf)
-{
-    uint8_t test_prepared_ackpdu[32] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31};
-//    uint8_t opcode = PHYPLUS_GET_OPCODE(packbuf->type);
-//    if((opcode > SNRF_PREPARED_ACKPDU_NUM) || (s_prepared_ackpdu[opcode-1].len > PHYPLUS_ACK_DATA_MAX_NUM))
-//    {
-//        return PPlus_ERR_INVALID_PARAM;
-//    }
-//    else if(s_prepared_ackpdu[opcode-1].type == NULL)
-//    {
-//        return PPlus_ERR_NULL;
-//    }
-//    else
-    {
-//        packbuf->len = s_prepared_ackpdu[opcode-1].len;
-        osal_memcpy(packbuf->data, test_prepared_ackpdu, 31);
-    }
-    return PPlus_SUCCESS;
-}
-#endif
 
 /*********************************************************************
 *********************************************************************/
